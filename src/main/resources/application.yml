@@ -1,0 +1,89 @@
+spring:
+  application:
+    name: mineopsapi
+
+  datasource:
+    # Se prefiere la URL completa cuando el proveedor la entrega de una pieza (local y Docker
+    # Compose). Cuando la entrega desarmada en host, puerto y base —como hace Render con su
+    # blueprint— se arma aquí, en vez de obligar a pegarla a mano en un panel.
+    url: ${DATASOURCE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mineops}}
+    username: ${DATASOURCE_USERNAME:mineops}
+    password: ${DATASOURCE_PASSWORD:mineops}
+    hikari:
+      pool-name: mineops-pool
+      maximum-pool-size: ${DATASOURCE_POOL_SIZE:10}
+      connection-timeout: 20000
+
+  jpa:
+    # El esquema lo define Flyway; Hibernate solo verifica que el mapeo coincida con él.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc.time_zone: UTC
+        format_sql: true
+        # Los enums se almacenan como texto plano, nunca como un tipo enum nativo de la base. Un tipo
+        # nativo convertiría agregar un valor en una migración de esquema, y los CHECK de las
+        # migraciones ya mantienen honesta a la columna.
+        type.preferred_enum_jdbc_type: VARCHAR
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  jackson:
+    # Los miembros nulos se omiten, de modo que un payload de error solo lleva los campos que aplican.
+    # Jackson 3 ya escribe las fechas como cadenas ISO-8601 por defecto.
+    default-property-inclusion: non_null
+
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
+logging:
+  level:
+    com.mineops.mineopsapi: ${LOG_LEVEL:INFO}
+
+mineops:
+  security:
+    jwt:
+      # Se sobrescribe en todo ambiente desplegado. HS256 exige al menos 32 bytes.
+      secret: ${JWT_SECRET:mineops-local-development-secret-key-change-me}
+      expiration-hours: ${JWT_EXPIRATION_HOURS:12}
+      issuer: mineops-api
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}
+  seed:
+    # Carga el conjunto de demostración descrito en el README cuando la base está vacía.
+    enabled: ${SEED_ENABLED:true}
+  operations:
+    # Tolerancia, como fracción de las horas planificadas, antes de que un cierre se considere una
+    # desviación que requiere justificación.
+    shift-closure-tolerance: ${SHIFT_CLOSURE_TOLERANCE:0.20}
+    # Horizonte en días del modelo de lectura de proyección de mantenimiento (regla de negocio 12).
+    projection-horizon-days: 7

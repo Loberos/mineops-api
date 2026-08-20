@@ -1,0 +1,35 @@
+# Perfil que usa la prueba de arranque: una base en memoria para poder levantar la aplicación completa
+# sin Docker. Flyway queda apagado y es Hibernate quien deriva el esquema, que es precisamente lo que
+# permite a esta prueba detectar un mapeo roto o una consulta que no compila.
+spring:
+  datasource:
+    url: jdbc:h2:mem:mineops;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+  flyway:
+    enabled: false
+
+mineops:
+  security:
+    jwt:
+      secret: test-secret-key-with-at-least-32-bytes-for-hmac-sha256
+      expiration-hours: 12
+      issuer: mineops-api
+    cors:
+      allowed-origins: http://localhost:4200
+  seed:
+    enabled: true
+  operations:
+    shift-closure-tolerance: 0.20
+    projection-horizon-days: 7
+
+logging:
+  level:
+    org.hibernate.SQL: warn
