@@ -38,6 +38,10 @@ public class WebSecurityConfiguration {
             "/api/v1/authentication/sign-up",
             "/actuator/health",
             "/actuator/health/**",
+            // El pipeline lo consulta sin credenciales para comprobar qué versión quedó desplegada.
+            // Solo publica versión, fecha de construcción y commit: nada que no esté ya en el
+            // repositorio, que es público.
+            "/actuator/info",
             "/v3/api-docs",
             "/v3/api-docs/**",
             "/swagger-ui.html",

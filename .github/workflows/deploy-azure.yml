@@ -54,6 +54,9 @@ jobs:
         with:
           context: .
           push: true
+          # Queda grabado en el artefacto y permite comprobar después qué versión quedó sirviendo.
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           # Se etiqueta con el SHA además de `latest` para que el despliegue apunte a una imagen
           # concreta: si hay que volver atrás, la anterior sigue existiendo con su propia etiqueta.
           tags: |
@@ -91,17 +94,18 @@ jobs:
             *) echo "el webhook no aceptó el aviso"; exit 1 ;;
           esac
 
-      - name: Comprobar que la aplicación quedó arriba
+      - name: Comprobar que quedó sirviendo esta versión
         env:
           # El hostname va aparte del nombre del recurso a propósito: con "nombre de host
           # predeterminado único seguro" activado, Azure le añade un sufijo aleatorio y deja de
           # coincidir con el nombre de la aplicación. Se copia tal cual desde la portada del recurso.
           HOST: ${{ vars.AZURE_APP_HOSTNAME }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          # Sin esta comprobación, una variable ausente deja la URL como "https:///actuator/health" y
-          # el paso agota los diez minutos de reintentos contra nada, sin decir cuál es el problema.
+          # Sin esta comprobación, una variable ausente deja la URL como "https:///actuator/info" y
+          # el paso agota los reintentos contra nada, sin decir cuál es el problema.
           if [ -z "${HOST:-}" ]; then
             echo "Falta la variable de repositorio AZURE_APP_HOSTNAME"
             echo "Es el hostname completo de la portada del App Service, con el sufijo aleatorio"
@@ -109,22 +113,30 @@ jobs:
             exit 1
           fi
 
-          URL="https://${HOST}/actuator/health"
-          echo "sondeando $URL"
+          URL="https://${HOST}/actuator/info"
+          echo "esperando a que $URL informe el commit $SHA"
 
+          # No basta con que la API responda: una instancia que sigue sirviendo la imagen anterior
+          # responde igual de bien, con el mismo 200 y el mismo UP. Lo que se comprueba es que el
+          # commit informado sea este, que es la única señal capaz de distinguir un despliegue
+          # aplicado de uno que se quedó por el camino.
+          #
           # App Service tiene que descargar la imagen, arrancar la JVM y levantar el contexto de
-          # Spring antes de responder. En un B1 frío eso son varios minutos, así que se sondea
-          # durante diez en lugar de dar el despliegue por fallido a la primera.
+          # Spring: en un B1 frío son varios minutos.
+          visto=""
           for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo 000)
-            echo "intento $i  HTTP $code  $URL"
-            if [ "$code" = "200" ]; then
-              echo "La API responde UP en Azure"
+            visto=$(curl -s --max-time 30 "$URL" | tr ',{}' '\n\n\n' | grep '"commit"' | cut -d'"' -f4 || true)
+            if [ "$visto" = "$SHA" ]; then
+              echo "desplegado y verificado: $SHA"
               exit 0
             fi
+            echo "intento $i: sirviendo '${visto:-(sin dato)}'"
             sleep 10
           done
 
-          echo "La API no respondió 200 tras diez minutos sondeando $URL"
-          echo "Último código recibido: $code (000 significa que ni siquiera se pudo conectar)"
+          echo ""
+          echo "Tras diez minutos App Service sigue sirviendo '${visto:-(sin dato)}' y no '$SHA'."
+          echo "La causa habitual es que la etiqueta del contenedor esté fijada a un SHA concreto en"
+          echo "vez de 'latest': el webhook avisa, App Service vuelve a bajar la misma imagen de"
+          echo "siempre y el despliegue parece correcto sin haber cambiado nada."
           exit 1

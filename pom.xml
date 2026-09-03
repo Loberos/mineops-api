@@ -16,6 +16,8 @@
 
     <properties>
         <java.version>26</java.version>
+        <!-- Lo sobrescribe la construcción del contenedor con el SHA real: -Dgit.commit=... -->
+        <git.commit>local</git.commit>
         <jjwt.version>0.13.0</jjwt.version>
         <springdoc.version>3.0.0</springdoc.version>
         <testcontainers.version>1.21.3</testcontainers.version>
@@ -165,6 +167,24 @@
                         </exclude>
                     </excludes>
                 </configuration>
+                <executions>
+                    <!--
+                        Graba en el artefacto el commit con el que se construyó. Sin esto no hay forma
+                        de preguntarle a una instancia en ejecución qué versión está sirviendo, y un
+                        despliegue que no llegó a aplicarse se ve idéntico a uno correcto: la API
+                        responde, el health da UP y nadie se entera de que el código es el anterior.
+                    -->
+                    <execution>
+                        <goals>
+                            <goal>build-info</goal>
+                        </goals>
+                        <configuration>
+                            <additionalProperties>
+                                <commit>${git.commit}</commit>
+                            </additionalProperties>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

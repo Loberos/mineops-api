@@ -9,7 +9,10 @@ COPY mvnw pom.xml ./
 RUN chmod +x mvnw && ./mvnw -B dependency:go-offline
 
 COPY src/ src/
-RUN ./mvnw -B -DskipTests clean package
+# El SHA llega desde el pipeline y queda grabado en el artefacto, de modo que la instancia en
+# ejecución pueda decir con qué commit se construyó.
+ARG GIT_COMMIT=local
+RUN ./mvnw -B -DskipTests -Dgit.commit="$GIT_COMMIT" clean package
 
 FROM eclipse-temurin:26-jre
 

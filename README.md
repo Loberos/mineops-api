@@ -281,7 +281,15 @@ consecuencia que se paga en cada consulta y que está atendida en `application.y
 El pipeline está en [`deploy-azure.yml`](.github/workflows/deploy-azure.yml): construye la imagen,
 la publica en GHCR —gratuito para repositorios públicos, a diferencia del ACR más barato, que
 consumiría crédito cada mes— y avisa a App Service por el webhook de implementación continua.
-Termina comprobando `/actuator/health` durante diez minutos antes de dar el despliegue por bueno.
+
+El último paso no comprueba que la API responda, sino **que responda esta versión**. La distinción
+importa: una instancia que sigue sirviendo la imagen anterior contesta con el mismo `200` y el mismo
+`UP`, así que un despliegue que no llegó a aplicarse se ve idéntico a uno correcto. El commit se
+graba en el artefacto al construirlo —`build-info` del `spring-boot-maven-plugin`, alimentado por el
+`ARG GIT_COMMIT` del `Dockerfile`— y el flujo sondea `/actuator/info` hasta que el commit informado
+coincide con el que acaba de construir. Si tras diez minutos no coincide, falla y nombra la causa
+más frecuente: la etiqueta del contenedor fijada a un SHA concreto en lugar de `latest`, con lo que
+el webhook avisa y App Service vuelve a descargar siempre la misma imagen.
 
 Pasos, una sola vez:
 

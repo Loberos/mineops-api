@@ -88,6 +88,10 @@ management:
     health:
       probes:
         enabled: true
+  info:
+    # Sin esto el endpoint responde un objeto vacío aunque el artefacto lleve la información.
+    build:
+      enabled: true
 
 springdoc:
   swagger-ui:
