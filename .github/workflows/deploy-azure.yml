@@ -96,20 +96,28 @@ jobs:
 
       - name: Comprobar que quedó sirviendo esta versión
         env:
-          # El hostname va aparte del nombre del recurso a propósito: con "nombre de host
-          # predeterminado único seguro" activado, Azure le añade un sufijo aleatorio y deja de
-          # coincidir con el nombre de la aplicación. Se copia tal cual desde la portada del recurso.
-          HOST: ${{ vars.AZURE_APP_HOSTNAME }}
+          WEBHOOK: ${{ secrets.AZURE_WEBHOOK_URL }}
+          # Opcional. Solo hace falta si el hostname público no se deduce del de despliegue, que es
+          # el caso raro; normalmente se dejan los dos en blanco y funciona.
+          HOST_EXPLICITO: ${{ vars.AZURE_APP_HOSTNAME }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          # Sin esta comprobación, una variable ausente deja la URL como "https:///actuator/info" y
-          # el paso agota los reintentos contra nada, sin decir cuál es el problema.
+          # El hostname se deduce de la URL del webhook en lugar de pedirlo por separado: la de
+          # despliegue es la pública con ".scm" intercalado, así que ya la tenemos. Declararlo dos
+          # veces solo añadía una variable más que olvidar —o que declarar como secreto en vez de
+          # como variable, que es lo mismo que no declararla.
+          if [ -n "${HOST_EXPLICITO:-}" ]; then
+            HOST="$HOST_EXPLICITO"
+          else
+            HOST=$(printf '%s' "$WEBHOOK" | sed -e 's|^.*@||' -e 's|/.*$||' -e 's|\.scm\.|.|')
+          fi
+
           if [ -z "${HOST:-}" ]; then
-            echo "Falta la variable de repositorio AZURE_APP_HOSTNAME"
-            echo "Es el hostname completo de la portada del App Service, con el sufijo aleatorio"
-            echo "que Azure añade cuando el nombre de host único está activado."
+            echo "No se pudo determinar el hostname de la aplicación."
+            echo "Falta el secreto AZURE_WEBHOOK_URL, o hay que declarar la variable"
+            echo "AZURE_APP_HOSTNAME con el hostname completo de la portada del App Service."
             exit 1
           fi
 
@@ -117,9 +125,9 @@ jobs:
           echo "esperando a que $URL informe el commit $SHA"
 
           # No basta con que la API responda: una instancia que sigue sirviendo la imagen anterior
-          # responde igual de bien, con el mismo 200 y el mismo UP. Lo que se comprueba es que el
-          # commit informado sea este, que es la única señal capaz de distinguir un despliegue
-          # aplicado de uno que se quedó por el camino.
+          # contesta con el mismo 200 y el mismo UP. Lo que se comprueba es que el commit informado
+          # sea este, que es la única señal capaz de distinguir un despliegue aplicado de uno que se
+          # quedó por el camino.
           #
           # App Service tiene que descargar la imagen, arrancar la JVM y levantar el contexto de
           # Spring: en un B1 frío son varios minutos.
@@ -136,7 +144,9 @@ jobs:
 
           echo ""
           echo "Tras diez minutos App Service sigue sirviendo '${visto:-(sin dato)}' y no '$SHA'."
-          echo "La causa habitual es que la etiqueta del contenedor esté fijada a un SHA concreto en"
-          echo "vez de 'latest': el webhook avisa, App Service vuelve a bajar la misma imagen de"
-          echo "siempre y el despliegue parece correcto sin haber cambiado nada."
+          echo "Causas habituales, por frecuencia:"
+          echo "  - La etiqueta del contenedor está fijada a un SHA en vez de 'latest', así que el"
+          echo "    webhook avisa y App Service vuelve a descargar siempre la misma imagen."
+          echo "  - La implementación continua está desactivada: el webhook acusa recibo con 202"
+          echo "    pero nadie actúa sobre el aviso."
           exit 1
