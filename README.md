@@ -297,48 +297,21 @@ Lo que el blueprint ya deja resuelto:
 
 El puerto no se fija: Render inyecta `PORT` y la aplicación lo respeta (`server.port: ${PORT:8080}`).
 
-**Mantener el servicio despierto**
+**Sobre el sueño por inactividad**
 
-El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico entrante, y volver a
-levantarlo cuesta cerca de 30 segundos —contenedor, JVM y contexto de Spring— antes de que la
-primera petición reciba respuesta. Quien abre la aplicación en ese momento no ve un plan gratuito:
-ve un producto caído.
+El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico entrante, y despertarlo
+cuesta cerca de 30 segundos —contenedor, JVM y contexto de Spring— antes de que la primera petición
+reciba respuesta. Quien abre la aplicación en ese momento no ve un plan gratuito: ve un producto
+caído.
 
-El repositorio lleva un flujo de GitHub Actions, [`keep-alive.yml`](.github/workflows/keep-alive.yml),
-que llama a `/actuator/health` con la frecuencia suficiente para que Render nunca llegue a contar
-esos 15 minutos. Se dispara cada 10 minutos y cada ejecución hace tres llamadas espaciadas cinco
-minutos, porque `schedule` no es puntual: bajo carga GitHub retrasa o descarta disparos, y esas
-llamadas intermedias hacen que ni siquiera saltarse una ejecución completa abra un hueco mayor a 15
-minutos. El repositorio es público, así que los minutos de Actions no se cobran.
+Por eso la API se despliega hoy en **Azure App Service**, cuyo plan B1 tiene *Always On* y no
+descarga el proceso por inactividad. La sección siguiente describe ese despliegue, que es el que
+está en uso.
 
-Detalles que conviene tener presentes:
-
-- Un ping que no reciba `200` deja la ejecución en rojo. El health check devuelve `503` cuando Spring
-  responde pero algo interno falla —típicamente la base—, de modo que la pestaña *Actions* sirve
-  también como monitor.
-- `workflow_dispatch` permite despertar el servicio a mano desde esa misma pestaña antes de una
-  demostración.
-- GitHub desactiva los flujos programados tras 60 días sin actividad en el repositorio, y avisa por
-  correo antes de hacerlo. Basta un commit, o reactivarlo desde *Actions*, para que vuelva a correr.
-- La URL apuntada se puede cambiar sin tocar el archivo, declarando la variable de repositorio
-  `KEEP_ALIVE_URL` en *Settings → Secrets and variables → Actions → Variables*.
-
-Como el servicio queda despierto las 24 horas, consume alrededor de 730 de las 750 horas-instancia
-que Render regala al mes. Entra, pero solo si es el único servicio web gratuito de la cuenta.
-
-> **La base gratuita caduca a los 30 días de creada.** Eso es independiente del sueño por
-> inactividad y ningún ping lo evita: llegada la fecha, Render la suspende y la API arranca pero
-> responde `503`. Antes de esa fecha hay que migrarla a un plan de pago o recrearla —Flyway y el
-> seed vuelven a dejarla lista en el primer arranque, pero se pierde lo que se haya capturado.
-
-Comprobación de que quedó bien, sin necesidad de abrir la interfaz:
-
-```bash
-curl https://<API>/actuator/health                 # {"status":"UP"}
-curl -X POST https://<API>/api/v1/authentication/sign-in \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"supervisor@mineops.pe","password":"MineOps2026!"}'
-```
+Si se prefiere volver a Render, la única forma de evitar el sueño en su plan gratuito es tráfico
+entrante periódico: un monitor externo —o un flujo programado— llamando a `/actuator/health` cada
+diez minutos. Conviene saber que `schedule` de GitHub Actions no es fiable para esto: no garantiza
+puntualidad y llega a descartar disparos sin avisar.
 
 **API en Azure App Service (alternativa a Render)**
 
@@ -372,30 +345,36 @@ Pasos, una sola vez:
 
    El host externo **no** es el mismo que el interno: lleva el sufijo de región
    (`dpg-xxxx-a.oregon-postgres.render.com`). El interno solo resuelve dentro de Render.
-4. *Configuration → General settings → **SCM Basic Auth Publishing Credentials: On***. El paso
-   `azure/webapps-deploy` con publish profile se autentica por ahí; con la autenticación básica
-   deshabilitada —como viene por defecto— el despliegue falla con un 401 poco explícito.
-5. *Deployment Center → Manage publish profile → Download*, y pegar el archivo completo como
-   secreto **`AZURE_PUBLISH_PROFILE`**. Además, dos variables de repositorio
-   (*Settings → Secrets and variables → Actions*):
+4. *Centro de implementación*, con **Origen: Container Registry** —no "Acciones de GitHub", que
+   escribiría un segundo flujo dentro de este repositorio y duplicaría el que ya existe:
 
-   | Variable | Valor |
+   | Campo | Valor |
    |---|---|
-   | `AZURE_APP_NAME` | el nombre del recurso |
-   | `AZURE_APP_HOSTNAME` | el hostname completo de la portada del recurso |
+   | Origen de imagen | Otros registros de contenedor |
+   | Tipo de imagen | **Público** (el paquete de GHCR lo es) |
+   | Servidor | `https://ghcr.io` |
+   | Imagen | `loberos/mineops-api` |
+   | Etiqueta | **`latest`** |
+   | Implementación continua | Activada |
 
-   Van separadas porque con *nombre de host predeterminado único seguro* activado —recomendable, y
-   activo por defecto— Azure le añade un sufijo aleatorio al hostname y deja de coincidir con el
-   nombre de la aplicación.
+   La etiqueta tiene que ser `latest`. El portal propone el SHA del último commit, y fijada a un SHA
+   la aplicación vuelve a descargar siempre la misma imagen: los despliegues siguientes salen en
+   verde sin traer código nuevo.
+5. Copiar la **URL del webhook** que genera la implementación continua y guardarla como secreto
+   **`AZURE_WEBHOOK_URL`**. Y una variable de repositorio, **`AZURE_APP_HOSTNAME`**, con el hostname
+   completo de la portada del recurso: con *nombre de host predeterminado único seguro* —activo por
+   defecto— Azure le añade un sufijo aleatorio y deja de coincidir con el nombre de la aplicación.
 6. Tras el primer push, hacer **público** el paquete en GHCR (*Packages → mineops-api → Package
    settings → Change visibility*). Nace privado, y un App Service sin credenciales de registro no
    puede tirar de él.
 7. Actualizar `apiBaseUrl` en el `environment.production.ts` del frontend a la URL de Azure y
    redesplegar en Vercel.
 
-Mientras Azure no esté en verde conviene dejar el keep-alive apuntando a Render: son dos destinos
-vivos y el tráfico de un ping no molesta a ninguno. Una vez migrado, el flujo sobra —*Always On* lo
-reemplaza— y se puede borrar.
+El flujo no usa `azure/webapps-deploy`: esa acción escribe la imagen en `siteConfig.linuxFxVersion`,
+que corresponde al modelo de contenedor único clásico. Una aplicación creada con Site Containers
+guarda la definición del contenedor en otro sitio, así que la escritura tenía éxito sin cambiar
+nada —despliegue en verde y App Service sirviendo todavía la imagen anterior—. El webhook funciona
+en ambos modelos y, de paso, evita depender del publish profile y de la autenticación básica.
 
 > **La base sigue en Render y sigue caducando a los 30 días de creada.** Mover la API a Azure no
 > cambia eso: llegada la fecha, la API arranca en Azure y responde `503` igual. Hay 14 días de

@@ -63,12 +63,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Desplegar en App Service
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ vars.AZURE_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-          images: ${{ env.IMAGE }}:${{ github.sha }}
+      # No se usa `azure/webapps-deploy`: esa acción escribe la imagen en
+      # `siteConfig.linuxFxVersion`, que es el modelo de contenedor único clásico. Esta aplicación se
+      # creó con el modelo Site Containers, donde la definición del contenedor vive en otro sitio, así
+      # que la escritura tenía éxito y no cambiaba nada: el despliegue salía verde y App Service
+      # seguía sirviendo la imagen anterior.
+      #
+      # El webhook de implementación continua sí funciona en ambos modelos: App Service vuelve a tirar
+      # de la etiqueta que tiene configurada. De paso desaparece la dependencia del publish profile y
+      # de la autenticación básica del SCM.
+      - name: Avisar a App Service que hay imagen nueva
+        env:
+          WEBHOOK: ${{ secrets.AZURE_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "Falta el secreto AZURE_WEBHOOK_URL (Centro de implementación > Webhook)"
+            exit 1
+          fi
+          code=$(curl -s -X POST -o /dev/null -w '%{http_code}' --max-time 60 "$WEBHOOK")
+          echo "webhook -> HTTP $code"
+          # El webhook responde 200 al aceptar el aviso; el arranque del contenedor va aparte y es
+          # el paso siguiente el que comprueba que terminó bien.
+          [ "$code" = "200" ]
 
       - name: Comprobar que la aplicación quedó arriba
         env:
@@ -80,10 +97,10 @@ jobs:
           set -euo pipefail
           URL="https://${HOST}/actuator/health"
 
-          # App Service tarda en arrancar el contenedor nuevo y en cambiar el enrutamiento, así que
-          # el primer intento casi siempre llega antes de tiempo. Se reintenta durante cinco minutos
-          # en lugar de dar el despliegue por fallido a la primera.
-          for i in $(seq 1 30); do
+          # App Service tiene que descargar la imagen, arrancar la JVM y levantar el contexto de
+          # Spring antes de responder. En un B1 frío eso son varios minutos, así que se sondea
+          # durante diez en lugar de dar el despliegue por fallido a la primera.
+          for i in $(seq 1 60); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo 000)
             echo "intento $i  HTTP $code  $URL"
             if [ "$code" = "200" ]; then
@@ -93,5 +110,5 @@ jobs:
             sleep 10
           done
 
-          echo "La API no respondió 200 tras cinco minutos"
+          echo "La API no respondió 200 tras diez minutos"
           exit 1
