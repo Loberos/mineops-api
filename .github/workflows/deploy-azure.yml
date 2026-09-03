@@ -99,7 +99,18 @@ jobs:
           HOST: ${{ vars.AZURE_APP_HOSTNAME }}
         run: |
           set -euo pipefail
+
+          # Sin esta comprobación, una variable ausente deja la URL como "https:///actuator/health" y
+          # el paso agota los diez minutos de reintentos contra nada, sin decir cuál es el problema.
+          if [ -z "${HOST:-}" ]; then
+            echo "Falta la variable de repositorio AZURE_APP_HOSTNAME"
+            echo "Es el hostname completo de la portada del App Service, con el sufijo aleatorio"
+            echo "que Azure añade cuando el nombre de host único está activado."
+            exit 1
+          fi
+
           URL="https://${HOST}/actuator/health"
+          echo "sondeando $URL"
 
           # App Service tiene que descargar la imagen, arrancar la JVM y levantar el contexto de
           # Spring antes de responder. En un B1 frío eso son varios minutos, así que se sondea
@@ -114,5 +125,6 @@ jobs:
             sleep 10
           done
 
-          echo "La API no respondió 200 tras diez minutos"
+          echo "La API no respondió 200 tras diez minutos sondeando $URL"
+          echo "Último código recibido: $code (000 significa que ni siquiera se pudo conectar)"
           exit 1
