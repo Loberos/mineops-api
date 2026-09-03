@@ -1,5 +1,8 @@
 # Variables de entorno
 .env
+# Ajustes para pegar en el portal de Azure: llevan credenciales de la base y el JWT_SECRET,
+# y este repositorio es publico.
+*.local.json
 
 # Maven
 target/

@@ -340,6 +340,68 @@ curl -X POST https://<API>/api/v1/authentication/sign-in \
   -d '{"email":"supervisor@mineops.pe","password":"MineOps2026!"}'
 ```
 
+**API en Azure App Service (alternativa a Render)**
+
+App Service en plan **B1** tiene *Always On*, de modo que el contenedor no se duerme por
+inactividad y no depende de que nadie lo despierte. La base se queda en Render y se alcanza por su
+**External Database URL**, que exige SSL.
+
+El pipeline está en [`deploy-azure.yml`](.github/workflows/deploy-azure.yml): construye la imagen,
+la publica en GHCR —gratuito para repositorios públicos, a diferencia del ACR más barato, que
+consumiría crédito cada mes— y le dice a App Service que tire de la etiqueta con el SHA del commit.
+Termina comprobando `/actuator/health` durante cinco minutos antes de dar el despliegue por bueno.
+
+Pasos, una sola vez:
+
+1. En el portal, crear un **Web App for Containers**, Linux, plan **B1**. Región cercana a la base:
+   la de Render está en Oregón, así que **West US 2** evita que cada consulta cruce el país.
+2. *Configuration → General settings → **Always On: On***. Sin esto App Service también descarga la
+   aplicación tras un rato sin tráfico, y se vuelve al problema del principio.
+3. En *Configuration → Application settings*, declarar:
+
+   | Ajuste | Valor | Por qué |
+   |---|---|---|
+   | `WEBSITES_PORT` | `8080` | App Service no adivina el puerto del contenedor; hay que decírselo |
+   | `WEBSITES_CONTAINER_START_TIME_LIMIT` | `600` | El arranque de Spring supera el límite de 230 s por defecto en un B1 frío |
+   | `DATASOURCE_URL` | `jdbc:postgresql://<host-externo>/<base>?sslmode=require` | Tiene precedencia sobre `DB_HOST`/`DB_PORT`/`DB_NAME`, así que basta esta |
+   | `DATASOURCE_USERNAME` / `DATASOURCE_PASSWORD` | los de Render | |
+   | `JWT_SECRET` | 32 bytes o más | |
+   | `CORS_ALLOWED_ORIGINS` | `https://mineops-web.vercel.app` | Sin barra final |
+   | `SEED_ENABLED` | `true` | El seeder sale sin tocar nada si la base ya tiene datos |
+   | `TZ` | `America/Lima` | |
+
+   El host externo **no** es el mismo que el interno: lleva el sufijo de región
+   (`dpg-xxxx-a.oregon-postgres.render.com`). El interno solo resuelve dentro de Render.
+4. *Configuration → General settings → **SCM Basic Auth Publishing Credentials: On***. El paso
+   `azure/webapps-deploy` con publish profile se autentica por ahí; con la autenticación básica
+   deshabilitada —como viene por defecto— el despliegue falla con un 401 poco explícito.
+5. *Deployment Center → Manage publish profile → Download*, y pegar el archivo completo como
+   secreto **`AZURE_PUBLISH_PROFILE`**. Además, dos variables de repositorio
+   (*Settings → Secrets and variables → Actions*):
+
+   | Variable | Valor |
+   |---|---|
+   | `AZURE_APP_NAME` | el nombre del recurso |
+   | `AZURE_APP_HOSTNAME` | el hostname completo de la portada del recurso |
+
+   Van separadas porque con *nombre de host predeterminado único seguro* activado —recomendable, y
+   activo por defecto— Azure le añade un sufijo aleatorio al hostname y deja de coincidir con el
+   nombre de la aplicación.
+6. Tras el primer push, hacer **público** el paquete en GHCR (*Packages → mineops-api → Package
+   settings → Change visibility*). Nace privado, y un App Service sin credenciales de registro no
+   puede tirar de él.
+7. Actualizar `apiBaseUrl` en el `environment.production.ts` del frontend a la URL de Azure y
+   redesplegar en Vercel.
+
+Mientras Azure no esté en verde conviene dejar el keep-alive apuntando a Render: son dos destinos
+vivos y el tráfico de un ping no molesta a ninguno. Una vez migrado, el flujo sobra —*Always On* lo
+reemplaza— y se puede borrar.
+
+> **La base sigue en Render y sigue caducando a los 30 días de creada.** Mover la API a Azure no
+> cambia eso: llegada la fecha, la API arranca en Azure y responde `503` igual. Hay 14 días de
+> gracia antes de que Render la borre; en ese margen hay que recrearla y actualizar
+> `DATASOURCE_URL`, `DATASOURCE_USERNAME` y `DATASOURCE_PASSWORD` en App Service.
+
 El frontend se despliega aparte, desde su propio repositorio: ver
 [mineops-web](https://github.com/Loberos/mineops-web).
 

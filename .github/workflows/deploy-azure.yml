@@ -1,0 +1,97 @@
+# Construye la imagen y la despliega en Azure App Service.
+#
+# La API se mueve a App Service por una razón concreta: el plan B1 tiene "Always On", así que el
+# contenedor no se duerme por inactividad y no hace falta que nadie lo despierte. La base se queda
+# en Render y se alcanza por su External Database URL, que exige SSL.
+#
+# La imagen se publica en GHCR y no en Azure Container Registry: el registro de GitHub es gratuito
+# para repositorios públicos, mientras que el ACR más barato consumiría crédito todos los meses sin
+# aportar nada que aquí se necesite.
+name: deploy-azure
+
+on:
+  push:
+    branches: [main]
+    # Un cambio de documentación no justifica reconstruir y redesplegar la imagen.
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/keep-alive.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # Dos despliegues simultáneos sobre la misma aplicación se pisan; el último commit manda.
+  group: deploy-azure
+  cancel-in-progress: true
+
+env:
+  # GHCR exige el nombre en minúsculas, siempre, aunque el usuario de GitHub tenga mayúsculas.
+  IMAGE: ghcr.io/loberos/mineops-api
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Autenticarse en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Token que GitHub genera para la ejecución; no hay que crear ningún secreto para esto.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar la imagen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Se etiqueta con el SHA además de `latest` para que el despliegue apunte a una imagen
+          # concreta: si hay que volver atrás, la anterior sigue existiendo con su propia etiqueta.
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          # La caché de Actions evita que Maven vuelva a bajar todas las dependencias en cada push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Desplegar en App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          images: ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Comprobar que la aplicación quedó arriba
+        env:
+          # El hostname va aparte del nombre del recurso a propósito: con "nombre de host
+          # predeterminado único seguro" activado, Azure le añade un sufijo aleatorio y deja de
+          # coincidir con el nombre de la aplicación. Se copia tal cual desde la portada del recurso.
+          HOST: ${{ vars.AZURE_APP_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          URL="https://${HOST}/actuator/health"
+
+          # App Service tarda en arrancar el contenedor nuevo y en cambiar el enrutamiento, así que
+          # el primer intento casi siempre llega antes de tiempo. Se reintenta durante cinco minutos
+          # en lugar de dar el despliegue por fallido a la primera.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo 000)
+            echo "intento $i  HTTP $code  $URL"
+            if [ "$code" = "200" ]; then
+              echo "La API responde UP en Azure"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "La API no respondió 200 tras cinco minutos"
+          exit 1
