@@ -139,6 +139,16 @@ jobs:
               exit 0
             fi
             echo "intento $i: sirviendo '${visto:-(sin dato)}'"
+
+            # El aviso al webhook es un disparo sin garantía: si App Service tenía un despliegue en
+            # curso cuando llegó, lo descarta y nadie lo reintenta. Aquí se repite cada dos minutos
+            # mientras la versión no cambie, de modo que un aviso perdido se corrija solo en vez de
+            # dejar el despliegue a medias y el flujo en rojo.
+            if [ $((i % 12)) -eq 0 ]; then
+              echo "  -> la versión no cambia; reenviando el aviso a App Service"
+              curl -s -X POST -o /dev/null --max-time 60 "$WEBHOOK" || true
+            fi
+
             sleep 10
           done
 
