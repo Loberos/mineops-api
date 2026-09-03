@@ -297,10 +297,39 @@ Lo que el blueprint ya deja resuelto:
 
 El puerto no se fija: Render inyecta `PORT` y la aplicación lo respeta (`server.port: ${PORT:8080}`).
 
-> **Sobre el plan gratuito.** El servicio se duerme tras 15 minutos sin tráfico y tarda cerca de un
-> minuto en despertar, así que la primera visita después de un rato es lenta. Un monitor externo
-> —UptimeRobot, cron-job.org— llamando a `/actuator/health` cada 10 minutos lo mantiene despierto sin
-> costo. La base gratuita, además, caduca a los 30 días de creada.
+**Mantener el servicio despierto**
+
+El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico entrante, y volver a
+levantarlo cuesta cerca de 30 segundos —contenedor, JVM y contexto de Spring— antes de que la
+primera petición reciba respuesta. Quien abre la aplicación en ese momento no ve un plan gratuito:
+ve un producto caído.
+
+El repositorio lleva un flujo de GitHub Actions, [`keep-alive.yml`](.github/workflows/keep-alive.yml),
+que llama a `/actuator/health` con la frecuencia suficiente para que Render nunca llegue a contar
+esos 15 minutos. Se dispara cada 10 minutos y cada ejecución hace tres llamadas espaciadas cinco
+minutos, porque `schedule` no es puntual: bajo carga GitHub retrasa o descarta disparos, y esas
+llamadas intermedias hacen que ni siquiera saltarse una ejecución completa abra un hueco mayor a 15
+minutos. El repositorio es público, así que los minutos de Actions no se cobran.
+
+Detalles que conviene tener presentes:
+
+- Un ping que no reciba `200` deja la ejecución en rojo. El health check devuelve `503` cuando Spring
+  responde pero algo interno falla —típicamente la base—, de modo que la pestaña *Actions* sirve
+  también como monitor.
+- `workflow_dispatch` permite despertar el servicio a mano desde esa misma pestaña antes de una
+  demostración.
+- GitHub desactiva los flujos programados tras 60 días sin actividad en el repositorio, y avisa por
+  correo antes de hacerlo. Basta un commit, o reactivarlo desde *Actions*, para que vuelva a correr.
+- La URL apuntada se puede cambiar sin tocar el archivo, declarando la variable de repositorio
+  `KEEP_ALIVE_URL` en *Settings → Secrets and variables → Actions → Variables*.
+
+Como el servicio queda despierto las 24 horas, consume alrededor de 730 de las 750 horas-instancia
+que Render regala al mes. Entra, pero solo si es el único servicio web gratuito de la cuenta.
+
+> **La base gratuita caduca a los 30 días de creada.** Eso es independiente del sueño por
+> inactividad y ningún ping lo evita: llegada la fecha, Render la suspende y la API arranca pero
+> responde `503`. Antes de esa fecha hay que migrarla a un plan de pago o recrearla —Flyway y el
+> seed vuelven a dejarla lista en el primer arranque, pero se pierde lo que se haya capturado.
 
 Comprobación de que quedó bien, sin necesidad de abrir la interfaz:
 

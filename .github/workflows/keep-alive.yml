@@ -1,0 +1,67 @@
+# Mantiene despierta la API en Render.
+#
+# El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico entrante, y volver a
+# levantarlo cuesta cerca de 30 segundos: arranca el contenedor, la JVM y el contexto de Spring
+# antes de que la primera petición reciba respuesta. Para quien evalúa el producto eso se ve como
+# una aplicación caída, no como un plan gratuito.
+#
+# Este flujo golpea el health check con la frecuencia suficiente para que Render nunca llegue a
+# contar 15 minutos de inactividad. El repositorio es público, así que los minutos de Actions no se
+# cobran.
+name: keep-alive
+
+on:
+  schedule:
+    # Cada 10 minutos. GitHub no garantiza la puntualidad de `schedule` —bajo carga retrasa o
+    # descarta ejecuciones—, y por eso el propio trabajo hace varios pings espaciados en lugar de
+    # confiar en que el siguiente disparo llegue a tiempo.
+    - cron: '*/10 * * * *'
+  # Permite despertar el servicio a mano desde la pestaña Actions antes de una demostración.
+  workflow_dispatch:
+
+concurrency:
+  # Si un disparo se solapa con el anterior, el nuevo toma el relevo de la cobertura.
+  group: keep-alive
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Despertar la API
+        env:
+          # Se puede sobrescribir sin tocar el archivo declarando la variable de repositorio
+          # KEEP_ALIVE_URL en Settings > Secrets and variables > Actions > Variables.
+          URL: ${{ vars.KEEP_ALIVE_URL || 'https://mineops-api.onrender.com/actuator/health' }}
+        run: |
+          set -euo pipefail
+
+          ping() {
+            # --max-time 120 cubre el arranque en frío completo: si el servicio ya se había dormido,
+            # esta primera petición es la que paga la espera, y no la de quien evalúa.
+            local code
+            code=$(curl --silent --show-error --location \
+                        --retry 3 --retry-delay 10 --retry-all-errors \
+                        --max-time 120 \
+                        --output /dev/null --write-out '%{http_code}' \
+                        "$URL")
+            echo "$(date --iso-8601=seconds)  HTTP $code  $URL"
+            # El health check de Spring devuelve 200 con UP y 503 con DOWN. Un 503 significa que el
+            # servicio respondió pero algo interno falla —lo más probable, la base de datos—, y eso
+            # tiene que verse en rojo aquí en vez de pasar inadvertido.
+            [ "$code" = "200" ]
+          }
+
+          # Tres pings espaciados cinco minutos cubren los diez minutos que van hasta el siguiente
+          # disparo. Aunque GitHub se salte una ejecución entera, el hueco resultante queda por
+          # debajo de los 15 minutos que Render tolera.
+          ping
+          sleep 300
+          ping
+          sleep 300
+          ping
