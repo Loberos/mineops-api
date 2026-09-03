@@ -11,8 +11,8 @@ primera.
 | | |
 |---|---|
 | **Aplicación publicada** | https://mineops-web.vercel.app |
-| **API publicada** | https://mineops-api.onrender.com/api/v1 |
-| **Documentación interactiva** | https://mineops-api.onrender.com/swagger-ui.html |
+| **API publicada** | https://mineops-cpdtedfse0fbemcy.westus-01.azurewebsites.net/api/v1 |
+| **Documentación interactiva** | https://mineops-cpdtedfse0fbemcy.westus-01.azurewebsites.net/swagger-ui.html |
 | **Repositorio del frontend** | https://github.com/Loberos/mineops-web |
 
 > El razonamiento detrás del modelo de datos y la resolución de cada decisión abierta del enunciado
@@ -268,66 +268,25 @@ cuando el rol no alcanza para autorizar una excepción, **401** con token ausent
 
 ## Despliegue
 
-**API y base de datos en Render**
+La API corre en **Azure App Service**, plan B1, Linux, contenedor. Se eligió ese plan por *Always
+On*: mantiene el proceso vivo aunque no entre tráfico. Los planes gratuitos de las alternativas
+descargan la aplicación tras unos minutos de inactividad, y despertarla cuesta cerca de medio minuto
+—contenedor, JVM y contexto de Spring— antes de responder la primera petición. Quien abre la
+aplicación en ese momento no ve un plan gratuito: ve un producto caído.
 
-El despliegue está descrito como código en [`render.yaml`](render.yaml), así que no hay que
-configurar nada a mano salvo el secreto:
-
-1. En Render, *New → Blueprint* y elegir el repositorio `Loberos/mineops-api`, rama `main`.
-2. Render lee `render.yaml` y propone dos recursos: el servicio web **mineops-api**, construido desde
-   el `Dockerfile`, y la base **mineops-db**. Quedan enlazados solos: host, puerto, nombre de base,
-   usuario y contraseña se inyectan desde la base, sin copiar credenciales a ningún lado.
-3. La única variable que pide valor es **`JWT_SECRET`**, declarada con `sync: false` justamente para
-   que no viva en un repositorio público. Una clave de al menos 32 bytes:
-
-   ```bash
-   openssl rand -base64 48
-   ```
-
-4. *Apply*. Flyway crea el esquema y el seed carga los datos en el primer arranque.
-
-Lo que el blueprint ya deja resuelto:
-
-| Ajuste | Valor | Por qué |
-|---|---|---|
-| `healthCheckPath` | `/actuator/health` | El despliegue no se da por bueno hasta que Spring esté arriba |
-| `CORS_ALLOWED_ORIGINS` | la URL del frontend | La API compara orígenes exactos, sin comodines ni barra final |
-| `SEED_ENABLED` | `true` | Carga los casos borde descritos más arriba |
-| `TZ` | `America/Lima` | El seed se construye alrededor de "hoy"; con el contenedor en UTC ese "hoy" cambia de día a las 19:00 hora de Perú |
-
-El puerto no se fija: Render inyecta `PORT` y la aplicación lo respeta (`server.port: ${PORT:8080}`).
-
-**Sobre el sueño por inactividad**
-
-El plan gratuito de Render duerme el servicio tras 15 minutos sin tráfico entrante, y despertarlo
-cuesta cerca de 30 segundos —contenedor, JVM y contexto de Spring— antes de que la primera petición
-reciba respuesta. Quien abre la aplicación en ese momento no ve un plan gratuito: ve un producto
-caído.
-
-Por eso la API se despliega hoy en **Azure App Service**, cuyo plan B1 tiene *Always On* y no
-descarga el proceso por inactividad. La sección siguiente describe ese despliegue, que es el que
-está en uso.
-
-Si se prefiere volver a Render, la única forma de evitar el sueño en su plan gratuito es tráfico
-entrante periódico: un monitor externo —o un flujo programado— llamando a `/actuator/health` cada
-diez minutos. Conviene saber que `schedule` de GitHub Actions no es fiable para esto: no garantiza
-puntualidad y llega a descartar disparos sin avisar.
-
-**API en Azure App Service (alternativa a Render)**
-
-App Service en plan **B1** tiene *Always On*, de modo que el contenedor no se duerme por
-inactividad y no depende de que nadie lo despierte. La base se queda en Render y se alcanza por su
-**External Database URL**, que exige SSL.
+La base es un **PostgreSQL gestionado externo**, fuera del datacentro de la aplicación. Eso tiene una
+consecuencia que se paga en cada consulta y que está atendida en `application.yml`: ver
+[Rendimiento con la base fuera del datacentro](#rendimiento-con-la-base-fuera-del-datacentro).
 
 El pipeline está en [`deploy-azure.yml`](.github/workflows/deploy-azure.yml): construye la imagen,
 la publica en GHCR —gratuito para repositorios públicos, a diferencia del ACR más barato, que
-consumiría crédito cada mes— y le dice a App Service que tire de la etiqueta con el SHA del commit.
-Termina comprobando `/actuator/health` durante cinco minutos antes de dar el despliegue por bueno.
+consumiría crédito cada mes— y avisa a App Service por el webhook de implementación continua.
+Termina comprobando `/actuator/health` durante diez minutos antes de dar el despliegue por bueno.
 
 Pasos, una sola vez:
 
-1. En el portal, crear un **Web App for Containers**, Linux, plan **B1**. Región cercana a la base:
-   la de Render está en Oregón, así que **West US 2** evita que cada consulta cruce el país.
+1. En el portal, crear un **Web App for Containers**, Linux, plan **B1**. Conviene la región más
+   cercana a la base: cada consulta cruza internet, y la distancia se paga en cada una.
 2. *Configuration → General settings → **Always On: On***. Sin esto App Service también descarga la
    aplicación tras un rato sin tráfico, y se vuelve al problema del principio.
 3. En *Configuration → Application settings*, declarar:
@@ -337,14 +296,14 @@ Pasos, una sola vez:
    | `WEBSITES_PORT` | `8080` | App Service no adivina el puerto del contenedor; hay que decírselo |
    | `WEBSITES_CONTAINER_START_TIME_LIMIT` | `600` | El arranque de Spring supera el límite de 230 s por defecto en un B1 frío |
    | `DATASOURCE_URL` | `jdbc:postgresql://<host-externo>/<base>?sslmode=require` | Tiene precedencia sobre `DB_HOST`/`DB_PORT`/`DB_NAME`, así que basta esta |
-   | `DATASOURCE_USERNAME` / `DATASOURCE_PASSWORD` | los de Render | |
+   | `DATASOURCE_USERNAME` / `DATASOURCE_PASSWORD` | los de la base | |
    | `JWT_SECRET` | 32 bytes o más | |
    | `CORS_ALLOWED_ORIGINS` | `https://mineops-web.vercel.app` | Sin barra final |
    | `SEED_ENABLED` | `true` | El seeder sale sin tocar nada si la base ya tiene datos |
    | `TZ` | `America/Lima` | |
 
-   El host externo **no** es el mismo que el interno: lleva el sufijo de región
-   (`dpg-xxxx-a.oregon-postgres.render.com`). El interno solo resuelve dentro de Render.
+   Si el proveedor de la base ofrece dos cadenas de conexión, hay que usar la **externa**: la
+   interna solo resuelve dentro de su propia red y desde App Service no llega.
 4. *Centro de implementación*, con **Origen: Container Registry** —no "Acciones de GitHub", que
    escribiría un segundo flujo dentro de este repositorio y duplicaría el que ya existe:
 
@@ -376,13 +335,41 @@ guarda la definición del contenedor en otro sitio, así que la escritura tenía
 nada —despliegue en verde y App Service sirviendo todavía la imagen anterior—. El webhook funciona
 en ambos modelos y, de paso, evita depender del publish profile y de la autenticación básica.
 
-> **La base sigue en Render y sigue caducando a los 30 días de creada.** Mover la API a Azure no
-> cambia eso: llegada la fecha, la API arranca en Azure y responde `503` igual. Hay 14 días de
-> gracia antes de que Render la borre; en ese margen hay que recrearla y actualizar
-> `DATASOURCE_URL`, `DATASOURCE_USERNAME` y `DATASOURCE_PASSWORD` en App Service.
+> **La base tiene su propio ciclo de vida, independiente del de la API.** Los planes gratuitos de
+> PostgreSQL gestionado suelen caducar a los treinta días de creados. Llegada esa fecha la API
+> arranca con normalidad y responde `503`, que desde fuera se ve igual que una caída. Hay que
+> vigilar el vencimiento del proveedor y, al recrear la base, actualizar `DATASOURCE_URL`,
+> `DATASOURCE_USERNAME` y `DATASOURCE_PASSWORD` en App Service.
 
 El frontend se despliega aparte, desde su propio repositorio: ver
 [mineops-web](https://github.com/Loberos/mineops-web).
+
+---
+
+## Rendimiento con la base fuera del datacentro
+
+La aplicación y la base no comparten datacentro: la API corre en Azure y la base es un PostgreSQL
+gestionado externo. Cada consulta cruza internet, así que un viaje de ida y vuelta pasa de medio
+milisegundo a decenas de milisegundos. La diferencia no importa cuando una petición hace una
+consulta; importa mucho cuando hace doscientas sin que nadie lo note.
+
+Y las hacía. Las asociaciones del dominio se cargan `EAGER` a propósito —con `open-in-view` en
+`false` la sesión ya está cerrada cuando el ensamblador arma el DTO, y cargarlas perezosamente
+reventaría al serializar—, pero Hibernate las resolvía de a una fila por consulta. Un listado de
+veinte equipos hacía veintiún viajes; conviviendo con la base en el mismo datacentro eso eran diez
+milisegundos y era invisible.
+
+Lo que corrige `application.yml`:
+
+| Ajuste | Qué hace |
+|---|---|
+| `hibernate.default_batch_fetch_size: 50` | Agrupa hasta cincuenta asociaciones en un solo `where id in (...)`. El listado de veinte equipos pasa de veintiún viajes a dos |
+| `hibernate.jdbc.batch_size: 30` + `order_inserts` / `order_updates` | El mismo criterio al escribir. El ordenamiento es necesario: sin él, el agrupamiento se rompe en cuanto se intercalan dos tablas |
+| `hikari.minimum-idle: 5` + `keepalive-time` | Abrir una conexión cuesta el handshake TCP más el TLS completo. Se mantienen conexiones abiertas y se las sondea antes de que un cortafuegos intermedio las dé por muertas |
+| `server.compression` sobre `application/json` | Las respuestas de listado son JSON repetitivo y viajan por internet abierto hasta el navegador |
+
+Ninguno de estos ajustes es específico del proveedor: si algún día la base vuelve a convivir con la
+aplicación, siguen siendo correctos —solo dejan de notarse.
 
 ---
 

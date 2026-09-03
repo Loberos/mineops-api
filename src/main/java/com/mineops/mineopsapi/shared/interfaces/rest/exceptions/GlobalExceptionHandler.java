@@ -15,9 +15,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -132,6 +136,43 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResource> handleAccessDenied(
             AccessDeniedException exception, HttpServletRequest request) {
         return status(HttpStatus.FORBIDDEN, "No tienes permiso para realizar esta operación", request);
+    }
+
+    /**
+     * Una ruta que no corresponde a ningún controlador. Sin este manejador cae en el de más abajo y
+     * la API responde 500 a lo que solo es una dirección mal escrita: quien explora la API ve un
+     * fallo del servidor donde debería ver que el recurso no existe.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResource> handleNoResource(
+            NoResourceFoundException exception, HttpServletRequest request) {
+        return status(HttpStatus.NOT_FOUND, "El recurso solicitado no existe", request);
+    }
+
+    /**
+     * La ruta existe pero no admite ese verbo —un GET sobre lo que solo acepta POST—. Es información
+     * útil para quien integra, y no un error del servidor.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiErrorResource> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException exception, HttpServletRequest request) {
+        return status(HttpStatus.METHOD_NOT_ALLOWED,
+                "El método %s no está permitido en esta ruta".formatted(exception.getMethod()), request);
+    }
+
+    /** Cuerpo ausente o que no es JSON válido: el error es de quien llama, no del servidor. */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiErrorResource> handleUnreadableBody(
+            HttpMessageNotReadableException exception, HttpServletRequest request) {
+        return status(HttpStatus.BAD_REQUEST, "El cuerpo de la petición no es un JSON válido", request);
+    }
+
+    /** Un parámetro de ruta con el tipo equivocado, como un identificador que no es numérico. */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiErrorResource> handleTypeMismatch(
+            MethodArgumentTypeMismatchException exception, HttpServletRequest request) {
+        return status(HttpStatus.BAD_REQUEST,
+                "El valor de '%s' no tiene el formato esperado".formatted(exception.getName()), request);
     }
 
     /**

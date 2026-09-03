@@ -1,8 +1,8 @@
 # Construye la imagen y la despliega en Azure App Service.
 #
-# La API se mueve a App Service por una razón concreta: el plan B1 tiene "Always On", así que el
-# contenedor no se duerme por inactividad y no hace falta que nadie lo despierte. La base se queda
-# en Render y se alcanza por su External Database URL, que exige SSL.
+# La API corre en App Service por una razón concreta: el plan B1 tiene "Always On", así que el
+# contenedor no se duerme por inactividad y no hace falta que nadie lo despierte. La base es externa
+# y se alcanza por su cadena de conexión pública, que exige SSL.
 #
 # La imagen se publica en GHCR y no en Azure Container Registry: el registro de GitHub es gratuito
 # para repositorios públicos, mientras que el ACR más barato consumiría crédito todos los meses sin

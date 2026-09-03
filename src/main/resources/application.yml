@@ -4,8 +4,8 @@ spring:
 
   datasource:
     # Se prefiere la URL completa cuando el proveedor la entrega de una pieza (local y Docker
-    # Compose). Cuando la entrega desarmada en host, puerto y base —como hace Render con su
-    # blueprint— se arma aquí, en vez de obligar a pegarla a mano en un panel.
+    # Compose). Cuando la entrega desarmada en host, puerto y base, se arma aquí en vez de obligar
+    # a pegarla a mano en un panel.
     url: ${DATASOURCE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mineops}}
     username: ${DATASOURCE_USERNAME:mineops}
     password: ${DATASOURCE_PASSWORD:mineops}
@@ -13,6 +13,13 @@ spring:
       pool-name: mineops-pool
       maximum-pool-size: ${DATASOURCE_POOL_SIZE:10}
       connection-timeout: 20000
+      # La base vive fuera del datacentro de la aplicación, así que abrir una conexión cuesta el
+      # handshake TCP más el TLS completo: decenas de milisegundos que se pagan en la petición que
+      # tenga la mala suerte de encontrar el pool vacío. Se mantiene un mínimo de conexiones
+      # abiertas y se las sondea antes de que un cortafuegos intermedio las dé por muertas.
+      minimum-idle: ${DATASOURCE_POOL_MIN_IDLE:5}
+      keepalive-time: 120000
+      max-lifetime: 900000
 
   jpa:
     # El esquema lo define Flyway; Hibernate solo verifica que el mapeo coincida con él.
@@ -23,6 +30,23 @@ spring:
       hibernate:
         jdbc.time_zone: UTC
         format_sql: true
+
+        # Las asociaciones del dominio se cargan EAGER a propósito: con `open-in-view` en false la
+        # sesión ya está cerrada cuando el ensamblador arma el DTO, y cargarlas perezosamente
+        # reventaría al serializar. Lo que sí se puede evitar es que Hibernate las resuelva de a una
+        # fila por consulta. Con esto agrupa hasta cincuenta en un solo `where id in (...)`: un
+        # listado de veinte equipos pasa de veintiún viajes a la base a dos.
+        #
+        # Con la base en el mismo datacentro esto pasaba inadvertido —medio milisegundo por viaje—;
+        # con la base fuera, cada viaje cuesta decenas de milisegundos y la diferencia es de
+        # segundos por petición.
+        default_batch_fetch_size: 50
+
+        # El mismo razonamiento para la escritura: las sentencias se agrupan en un único viaje. Hay
+        # que ordenarlas antes, o el agrupamiento se rompe en cuanto se intercalan dos tablas.
+        jdbc.batch_size: 30
+        order_inserts: true
+        order_updates: true
         # Los enums se almacenan como texto plano, nunca como un tipo enum nativo de la base. Un tipo
         # nativo convertiría agregar un valor en una migración de esquema, y los CHECK de las
         # migraciones ya mantienen honesta a la columna.
@@ -44,6 +68,12 @@ spring:
 
 server:
   port: ${PORT:8080}
+  # Las respuestas de listado son JSON repetitivo y viajan hasta el navegador por internet abierto.
+  # Comprimirlas cuesta muy poca CPU y recorta la mayor parte de esos bytes.
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 1024
   error:
     include-message: never
     include-stacktrace: never
